@@ -43,6 +43,7 @@ setup(
         "modelforge>=0.11.1,<0.12.0",
         "requirements-parser>=0.2.0,<2.0",
         "lookout-sdk>=0.4.1,<0.5",
+        "sortedcontainers>=0.2.1,<0.3",
         "typing;python_version<'3.5'",
     ],
     extras_require={
