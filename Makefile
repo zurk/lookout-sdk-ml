@@ -30,4 +30,4 @@ bblfsh-start:
 	! docker ps | grep bblfshd # bblfsh server should not be running already
 	docker run -d --name style_analyzer_bblfshd --privileged -p 9432\:9432 bblfsh/bblfshd\:v2.10.0
 	docker exec style_analyzer_bblfshd bblfshctl driver install \
-		javascript docker://bblfsh/javascript-driver\:v1.2.0
+		javascript docker://bblfsh/javascript-driver\:v2.6.0

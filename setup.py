@@ -43,6 +43,7 @@ setup(
         "modelforge>=0.11.1,<0.12.0",
         "requirements-parser>=0.2.0,<2.0",
         "lookout-sdk>=0.4.1,<0.5",
+        "numpy>=1.16.1,<1.17",
         "typing;python_version<'3.5'",
     ],
     extras_require={
@@ -50,7 +51,9 @@ setup(
     },
     tests_require=tests_require,
     package_data={"": ["../license.md", "README.md", "../requirements.txt"],
-                  "lookout.core": ["container/*", "examples/*.py"]},
+                  "lookout.core": ["container/*", "examples/*.py"],
+                  "lookout.core.tests": ["*.xz"],
+                  },
     classifiers=[
         "Development Status :: 4 - Beta",
         "Environment :: Console",

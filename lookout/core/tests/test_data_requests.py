@@ -6,15 +6,17 @@ import unittest
 import bblfsh
 
 import lookout.core
-from lookout.core.analyzer import ReferencePointer
+from lookout.core.analyzer import ReferencePointer, UnicodeFile
 from lookout.core.api.event_pb2 import PushEvent, ReviewEvent
 from lookout.core.api.service_analyzer_pb2 import EventResponse
 from lookout.core.data_requests import (
-    DataService, parse_uast, with_changed_contents, with_changed_uasts,
-    with_changed_uasts_and_contents, with_contents, with_uasts, with_uasts_and_contents)
+    DataService, parse_uast, UnicodeDataService, with_changed_contents, with_changed_uasts,
+    with_changed_uasts_and_contents, with_contents, with_uasts, with_uasts_and_contents,
+    with_unicode_data_service)
 from lookout.core.event_listener import EventHandlers, EventListener
 from lookout.core.helpers.server import find_port, LookoutSDK
 import lookout.core.tests
+from lookout.core.tests.test_bytes_to_unicode_converter import check_uast_transformation
 
 
 class DataRequestsTests(unittest.TestCase, EventHandlers):
@@ -191,10 +193,49 @@ class DataRequestsTests(unittest.TestCase, EventHandlers):
              None,
              self.data_service)
 
+    def test_with_unicode_data_service(self):
+        def func(imposter, ptr: ReferencePointer, config: dict,
+                 data_service: UnicodeDataService, **data):
+            self.assertIsInstance(data_service, UnicodeDataService)
+            files = list(data["files"])
+            self.assertEqual(len(files), 18)
+            for file in files:
+                self.assertIsInstance(file, UnicodeFile)
+                self.assertIsInstance(file.content, str)
+                if not file.path.endswith("__init__.py"):
+                    self.assertGreater(len(file.content), 0, file.path)
+                self.assertEqual(type(file.uast).__module__, bblfsh.Node.__module__)
+                self.assertTrue(file.path)
+                self.assertIn(file.language, ("Python", "YAML", "Dockerfile", "Markdown",
+                                              "Jupyter Notebook", "Shell", "Text", ""))
+
+        func = with_unicode_data_service(with_uasts_and_contents(func))
+        func(self,
+             ReferencePointer(self.url, self.ref, self.COMMIT_TO),
+             None,
+             self.data_service)
+
     def test_babelfish(self):
         uast, errors = parse_uast(self.data_service.get_bblfsh(), "console.log('hi');", "hi.js")
         self.assertIsInstance(uast, bblfsh.Node)
         self.assertEqual(len(errors), 0, str(errors))
+
+    def test_babelfish_with_unicode(self):
+        content = b"console.log('\xc3\x80');"
+        data_service_uni = UnicodeDataService.from_data_service(self.data_service)
+        request = bblfsh.aliases.ParseRequest(filename="hi.js",
+                                              content=content.decode(),
+                                              language=None)
+        try:
+            response_uni = data_service_uni.get_bblfsh().Parse(request)
+            response_bytes = self.data_service.get_bblfsh().Parse(request)
+            self.assertIsInstance(response_uni.uast, bblfsh.Node)
+            self.assertIsInstance(response_bytes.uast, bblfsh.Node)
+            self.assertEqual(len(response_uni.errors), 0, str(response_uni.errors))
+            self.assertEqual(len(response_bytes.errors), 0, str(response_bytes.errors))
+            check_uast_transformation(self, content, response_bytes.uast, response_uni.uast)
+        finally:
+            data_service_uni.shutdown()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from lookout.core.analyzer import Analyzer, AnalyzerModel, ReferencePointer
 from lookout.core.api.service_analyzer_pb2 import Comment
 from lookout.core.api.service_data_pb2 import Change, ChangesRequest, File, FilesRequest
 from lookout.core.api.service_data_pb2_grpc import DataStub
+from lookout.core.bytes_to_unicode_converter import BytesToUnicodeConverter
 from lookout.core.garbage_exclusion import GARBAGE_PATTERN
 from lookout.core.ports import Type
 
@@ -86,6 +87,66 @@ class DataService:
             self._data_request_channels.append(channel)
             self._log.info("Opened %s", channel)
         return channel
+
+
+class UnicodeDataService(DataService):
+    """Retrieves UASTs/files from the Lookout server and adjusts offsets for Unicode contents."""
+
+    def _unicodify_changes(func):
+        @functools.wraps(func)
+        def wrapped_unicodify_get_changes(*args, **kwargs):
+            return map(BytesToUnicodeConverter.convert_change, func(*args, **kwargs))
+
+        return wrapped_unicodify_get_changes
+
+    def _unicodify_files(func):
+        @functools.wraps(func)
+        def wrapped_unicodify_get_files(*args, **kwargs):
+            return map(BytesToUnicodeConverter.convert_file, func(*args, **kwargs))
+
+        return wrapped_unicodify_get_files
+
+    def _unicodify_uast(func):
+        @functools.wraps(func)
+        def wrapped_unicodify_parse(parse_request: bblfsh.aliases.ParseRequest):
+            response = func(parse_request)
+            new_response = bblfsh.aliases.ParseResponse(
+                uast=BytesToUnicodeConverter(parse_request.content.encode()).convert_uast(
+                    response.uast),
+                errors=response.errors)
+            return new_response
+
+        return wrapped_unicodify_parse
+
+    def get_data(self) -> DataStub:
+        """
+        Return a `DataStub` for the current thread.
+        """
+        stub = super().get_data()
+        stub.GetChanges = UnicodeDataService._unicodify_changes(stub.GetChanges)
+        stub.GetFiles = UnicodeDataService._unicodify_files(stub.GetFiles)
+        return stub
+
+    def get_bblfsh(self) -> bblfsh.aliases.ProtocolServiceStub:
+        """
+        Return a Babelfish `ProtocolServiceStub` for the current thread.
+        """
+        stub = super().get_bblfsh()
+        stub.Parse = UnicodeDataService._unicodify_uast(stub.Parse)
+        return stub
+
+    _unicodify_changes = staticmethod(_unicodify_changes)
+    _unicodify_files = staticmethod(_unicodify_files)
+    _unicodify_uast = staticmethod(_unicodify_uast)
+
+    def __str__(self):
+        """Summarize the UnicodeDataService instance as a string."""
+        return "UnicodeDataService(%s)" % self._data_request_address
+
+    @staticmethod
+    def from_data_service(data_service: DataService) -> "UnicodeDataService":
+        """Convert DataService to UnicodeDataService."""
+        return UnicodeDataService(data_service._data_request_address)
 
 
 def _handle_rpc_errors(func):
@@ -228,6 +289,28 @@ def with_uasts_and_contents(func):  # noqa: D401
         return func(cls, ptr, config, data_service, files=files, **data)
 
     return wrapped_with_uasts_and_contents
+
+
+def with_unicode_data_service(func):  # noqa: D401
+    """Decorator to convert DataService to UnicodeDataService."""
+    @functools.wraps(func)
+    def wrapped_with_unicode_data_service(*args, **kwargs) -> AnalyzerModel:
+        try:
+            args = list(args)
+            for i, arg in enumerate(args):
+                if isinstance(arg, DataService):
+                    data_service = UnicodeDataService.from_data_service(arg)
+                    args[i] = data_service
+                    return func(*args, **kwargs)
+            for arg_name in kwargs:
+                if isinstance(kwargs[arg_name], DataService):
+                    data_service = UnicodeDataService.from_data_service(kwargs[arg_name])
+                    kwargs[arg_name] = data_service
+                    return func(*args, **kwargs)
+        finally:
+            data_service.shutdown()
+
+    return wrapped_with_unicode_data_service
 
 
 def request_changes(stub: DataStub, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
