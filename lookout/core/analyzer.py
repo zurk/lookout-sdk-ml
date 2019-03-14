@@ -141,6 +141,7 @@ class Analyzer:
         :param url: The analyzed project's Git remote.
         :param config: Configuration of the analyzer of unspecified structure.
         """
+        self._log = logging.getLogger(type(self).__name__)
         self.model = model
         self.url = url
         self.config = config
