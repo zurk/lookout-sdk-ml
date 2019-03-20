@@ -89,66 +89,6 @@ class DataService:
         return channel
 
 
-class UnicodeDataService(DataService):
-    """Retrieves UASTs/files from the Lookout server and adjusts offsets for Unicode contents."""
-
-    def _unicodify_changes(func):
-        @functools.wraps(func)
-        def wrapped_unicodify_get_changes(*args, **kwargs):
-            return map(BytesToUnicodeConverter.convert_change, func(*args, **kwargs))
-
-        return wrapped_unicodify_get_changes
-
-    def _unicodify_files(func):
-        @functools.wraps(func)
-        def wrapped_unicodify_get_files(*args, **kwargs):
-            return map(BytesToUnicodeConverter.convert_file, func(*args, **kwargs))
-
-        return wrapped_unicodify_get_files
-
-    def _unicodify_uast(func):
-        @functools.wraps(func)
-        def wrapped_unicodify_parse(parse_request: bblfsh.aliases.ParseRequest):
-            response = func(parse_request)
-            new_response = bblfsh.aliases.ParseResponse(
-                uast=BytesToUnicodeConverter(parse_request.content.encode()).convert_uast(
-                    response.uast),
-                errors=response.errors)
-            return new_response
-
-        return wrapped_unicodify_parse
-
-    def get_data(self) -> DataStub:
-        """
-        Return a `DataStub` for the current thread.
-        """
-        stub = super().get_data()
-        stub.GetChanges = UnicodeDataService._unicodify_changes(stub.GetChanges)
-        stub.GetFiles = UnicodeDataService._unicodify_files(stub.GetFiles)
-        return stub
-
-    def get_bblfsh(self) -> bblfsh.aliases.ProtocolServiceStub:
-        """
-        Return a Babelfish `ProtocolServiceStub` for the current thread.
-        """
-        stub = super().get_bblfsh()
-        stub.Parse = UnicodeDataService._unicodify_uast(stub.Parse)
-        return stub
-
-    _unicodify_changes = staticmethod(_unicodify_changes)
-    _unicodify_files = staticmethod(_unicodify_files)
-    _unicodify_uast = staticmethod(_unicodify_uast)
-
-    def __str__(self):
-        """Summarize the UnicodeDataService instance as a string."""
-        return "UnicodeDataService(%s)" % self._data_request_address
-
-    @staticmethod
-    def from_data_service(data_service: DataService) -> "UnicodeDataService":
-        """Convert DataService to UnicodeDataService."""
-        return UnicodeDataService(data_service._data_request_address)
-
-
 def _handle_rpc_errors(func):
     @functools.wraps(func)
     def wrapped_handle_rpc_errors(cls: Type[Analyzer], ptr: ReferencePointer, config: dict,
@@ -162,7 +102,7 @@ def _handle_rpc_errors(func):
     return wrapped_handle_rpc_errors
 
 
-def with_changed_uasts(func):  # noqa: D401
+def with_changed_uasts(func, unicode: bool):  # noqa: D401
     """
     Decorator to provide "changes" keyword argument to `**data` in `Analyzer.analyze()`.
 
@@ -170,6 +110,8 @@ def with_changed_uasts(func):  # noqa: D401
     The changes will have only UASTs, no raw file contents.
 
     :param func: Method with the signature compatible with `Analyzer.analyze()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
     @functools.wraps(func)
@@ -178,13 +120,13 @@ def with_changed_uasts(func):  # noqa: D401
             self: Analyzer, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
             data_service: DataService, **data) -> [Comment]:
         changes = request_changes(
-            data_service.get_data(), ptr_from, ptr_to, contents=False, uast=True)
+            data_service.get_data(), ptr_from, ptr_to, contents=False, uast=True, unicode=unicode)
         return func(self, ptr_from, ptr_to, data_service, changes=changes, **data)
 
     return wrapped_with_changed_uasts
 
 
-def with_changed_contents(func):  # noqa: D401
+def with_changed_contents(func, unicode: bool):  # noqa: D401
     """
     Decorator to provide "changes" keyword argument to `**data` in `Analyzer.analyze()`.
 
@@ -192,6 +134,8 @@ def with_changed_contents(func):  # noqa: D401
     The changes will have only raw file contents, no UASTs.
 
     :param func: Method with the signature compatible with `Analyzer.analyze()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
     @functools.wraps(func)
@@ -200,13 +144,13 @@ def with_changed_contents(func):  # noqa: D401
             self: Analyzer, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
             data_service: DataService, **data) -> [Comment]:
         changes = request_changes(
-            data_service.get_data(), ptr_from, ptr_to, contents=True, uast=False)
+            data_service.get_data(), ptr_from, ptr_to, contents=True, uast=False, unicode=unicode)
         return func(self, ptr_from, ptr_to, data_service, changes=changes, **data)
 
     return wrapped_with_changed_contents
 
 
-def with_changed_uasts_and_contents(func):  # noqa: D401
+def with_changed_uasts_and_contents(unicode: bool):  # noqa: D401
     """
     Decorator to provide "changes" keyword argument to `**data` in `Analyzer.analyze()`.
 
@@ -214,21 +158,24 @@ def with_changed_uasts_and_contents(func):  # noqa: D401
     The changes will have both UASTs and raw file contents.
 
     :param func: Method with the signature compatible with `Analyzer.analyze()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
-    @functools.wraps(func)
-    @_handle_rpc_errors
-    def wrapped_with_changed_uasts_and_contents(
-            self: Analyzer, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
-            data_service: DataService, **data) -> [Comment]:
-        changes = request_changes(
-            data_service.get_data(), ptr_from, ptr_to, contents=True, uast=True)
-        return func(self, ptr_from, ptr_to, data_service, changes=changes, **data)
+    def with_changed_uasts_and_contents_(func):
+        @functools.wraps(func)
+        @_handle_rpc_errors
+        def wrapped_with_changed_uasts_and_contents(
+                self: Analyzer, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
+                data_service: DataService, **data) -> [Comment]:
+            changes = request_changes(
+                data_service.get_data(), ptr_from, ptr_to, contents=True, uast=True, unicode=unicode)
+            return func(self, ptr_from, ptr_to, data_service, changes=changes, **data)
 
-    return wrapped_with_changed_uasts_and_contents
+    return with_changed_uasts_and_contents_
 
 
-def with_uasts(func):  # noqa: D401
+def with_uasts(func, unicode: bool):  # noqa: D401
     """
     Decorator to provide "files" keyword argument to `**data` in `Analyzer.train()`. They \
     only contain the UASTs.
@@ -237,19 +184,22 @@ def with_uasts(func):  # noqa: D401
     revision, see lookout/core/server/sdk/service_data.proto.
 
     :param func: Method with the signature compatible with `Analyzer.train()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
     @functools.wraps(func)
     @_handle_rpc_errors
     def wrapped_with_uasts(cls: Type[Analyzer], ptr: ReferencePointer, config: dict,
                            data_service: DataService, **data) -> AnalyzerModel:
-        files = request_files(data_service.get_data(), ptr, contents=False, uast=True)
+        files = request_files(data_service.get_data(), ptr, contents=False, uast=True,
+                              unicode=unicode)
         return func(cls, ptr, config, data_service, files=files, **data)
 
     return wrapped_with_uasts
 
 
-def with_contents(func):  # noqa: D401
+def with_contents(func, unicode: bool):  # noqa: D401
     """
     Decorator to provide "files" keyword argument to `**data` in `Analyzer.train()`. They \
     only contain the raw file contents.
@@ -258,19 +208,22 @@ def with_contents(func):  # noqa: D401
     revision, see lookout/core/server/sdk/service_data.proto.
 
     :param func: Method with the signature compatible with `Analyzer.train()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
     @functools.wraps(func)
     @_handle_rpc_errors
     def wrapped_with_contents(cls: Type[Analyzer], ptr: ReferencePointer, config: dict,
                               data_service: DataService, **data) -> AnalyzerModel:
-        files = request_files(data_service.get_data(), ptr, contents=True, uast=False)
+        files = request_files(data_service.get_data(), ptr, contents=True, uast=False,
+                              unicode=unicode)
         return func(cls, ptr, config, data_service, files=files, **data)
 
     return wrapped_with_contents
 
 
-def with_uasts_and_contents(func):  # noqa: D401
+def with_uasts_and_contents(func, unicode: bool):  # noqa: D401
     """
     Decorator to provide "files" keyword argument to `**data` in `Analyzer.train()`. They \
     contain both the raw file contents and the UASTs.
@@ -279,42 +232,23 @@ def with_uasts_and_contents(func):  # noqa: D401
     repository URL and revision, see lookout/core/server/sdk/service_data.proto.
 
     :param func: Method with the signature compatible with `Analyzer.train()`.
+    :param unicode: Set to True if content and UAST should be converted to unicode data. \
+                    False keeps DataService response untouched.
     :return: The decorated method.
     """
     @functools.wraps(func)
     @_handle_rpc_errors
     def wrapped_with_uasts_and_contents(cls: Type[Analyzer], ptr: ReferencePointer, config: dict,
                                         data_service: DataService, **data) -> AnalyzerModel:
-        files = request_files(data_service.get_data(), ptr, contents=True, uast=True)
+        files = request_files(data_service.get_data(), ptr, contents=True, uast=True,
+                              unicode=unicode)
         return func(cls, ptr, config, data_service, files=files, **data)
 
     return wrapped_with_uasts_and_contents
 
 
-def with_unicode_data_service(func):  # noqa: D401
-    """Decorator to convert DataService to UnicodeDataService."""
-    @functools.wraps(func)
-    def wrapped_with_unicode_data_service(*args, **kwargs) -> AnalyzerModel:
-        try:
-            args = list(args)
-            for i, arg in enumerate(args):
-                if isinstance(arg, DataService):
-                    data_service = UnicodeDataService.from_data_service(arg)
-                    args[i] = data_service
-                    return func(*args, **kwargs)
-            for arg_name in kwargs:
-                if isinstance(kwargs[arg_name], DataService):
-                    data_service = UnicodeDataService.from_data_service(kwargs[arg_name])
-                    kwargs[arg_name] = data_service
-                    return func(*args, **kwargs)
-        finally:
-            data_service.shutdown()
-
-    return wrapped_with_unicode_data_service
-
-
 def request_changes(stub: DataStub, ptr_from: ReferencePointer, ptr_to: ReferencePointer,
-                    contents: bool, uast: bool) -> Iterator[Change]:
+                    contents: bool, uast: bool, unicode: bool) -> Iterator[Change]:
     """
     Invoke GRPC API and get the changes. Used by `with_changed_uasts()` and Review events.
 
@@ -327,11 +261,14 @@ def request_changes(stub: DataStub, ptr_from: ReferencePointer, ptr_to: Referenc
     request.want_contents = contents
     request.want_language = contents or uast
     request.want_uast = uast
-    return stub.GetChanges(request)
+    changes = stub.GetChanges(request)
+    if unicode:
+        changes = map(BytesToUnicodeConverter.convert_change, changes)
+    return changes
 
 
-def request_files(stub: DataStub, ptr: ReferencePointer, contents: bool, uast: bool) -> \
-        Iterator[File]:
+def request_files(stub: DataStub, ptr: ReferencePointer, contents: bool, uast: bool,
+                  unicode: bool) -> Iterator[File]:
     """
     Invoke GRPC API and get the files. Used by `with_uasts()` and Push events.
 
@@ -343,10 +280,13 @@ def request_files(stub: DataStub, ptr: ReferencePointer, contents: bool, uast: b
     request.want_contents = contents
     request.want_language = contents or uast
     request.want_uast = uast
-    return stub.GetFiles(request)
+    files = stub.GetFiles(request)
+    if unicode:
+        files = map(BytesToUnicodeConverter.convert_file, files)
+    return files
 
 
-def parse_uast(stub: bblfsh.aliases.ProtocolServiceStub, code: str, filename: str,
+def parse_uast(stub: bblfsh.aliases.ProtocolServiceStub, code: str, filename: str, unicode: bool,
                language: Optional[str] = None) -> Tuple[bblfsh.Node, list]:
     """
     Return UAST for given file contents and name.
@@ -356,9 +296,14 @@ def parse_uast(stub: bblfsh.aliases.ProtocolServiceStub, code: str, filename: st
     :param filename: The name of the file, can be a full path.
     :param language: The name of the language. It is not required to set: Babelfish can \
                      autodetect it.
+    :param unicode: Set to True if UAST position information should be converted to unicode \
+                    positions.
     :return: The parsed UAST or undefined object if there was an error; the list of parsing errors.
     """
     request = bblfsh.aliases.ParseRequest(filename=os.path.basename(filename), content=code,
                                           language=language)
     response = stub.Parse(request)
-    return response.uast, response.errors
+    uast = response.uast
+    if unicode:
+        uast = BytesToUnicodeConverter(code.encode()).convert_uast(uast)
+    return uast, response.errors
